@@ -9,10 +9,23 @@ jobs:
 
     env:
       PLUGIN_SDK_DIR: ${{ github.workspace }}\plugin-sdk
+      GTA_SA_DIR: ${{ github.workspace }}\gta_sa_dummy  # dummy dir for CI; prevents xmake copy step from failing
 
     steps:
-      - name: Checkout CoopAndreas
+      - name: Checkout CoopAndreas (main branch)
         uses: actions/checkout@v4
+        with:
+          repository: Tornamic/CoopAndreas
+          ref: main
+          fetch-depth: 0
+
+      - name: Debug — verify xmake.lua exists
+        shell: pwsh
+        run: |
+          Write-Host "Workspace: ${{ github.workspace }}"
+          Get-ChildItem -Force
+          if (Test-Path xmake.lua) { Write-Host "✅ xmake.lua found" }
+          else { Write-Host "❌ xmake.lua NOT found"; exit 1 }
 
       - name: Checkout plugin-sdk (pinned commit)
         uses: actions/checkout@v4
@@ -52,20 +65,24 @@ jobs:
           arch: x86
 
       - name: Configure xmake (x86 / windows / release)
-        run: xmake f -y -p windows -a x86 -m release
+        working-directory: ${{ github.workspace }}
         shell: cmd
+        run: xmake f -y -p windows -a x86 -m release
 
       - name: Build client
-        run: xmake build client
+        working-directory: ${{ github.workspace }}
         shell: cmd
+        run: xmake build client
 
       - name: Build server
-        run: xmake build server
+        working-directory: ${{ github.workspace }}
         shell: cmd
+        run: xmake build server
 
       - name: Build proxy
-        run: xmake build proxy
+        working-directory: ${{ github.workspace }}
         shell: cmd
+        run: xmake build proxy
 
       - name: List build outputs
         shell: pwsh

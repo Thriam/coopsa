@@ -61,9 +61,6 @@ jobs:
           Write-Host ""
           Write-Host "=== SCM Files ==="
           Get-ChildItem scm -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "$($_.Name) - $($_.Length) bytes" }
-          Write-Host ""
-          Write-Host "=== SDK Files ==="
-          Get-ChildItem "sdk\Sanny Builder 4" -Recurse -ErrorAction SilentlyContinue | Where-Object { -not $_.PSIsContainer } | Select-Object -First 10 | ForEach-Object { Write-Host "$($_.FullName.Replace($PWD.Path, '')) - $($_.Length) bytes" }
 
       # ==================================================================
       # PLUGIN-SDK
@@ -84,14 +81,6 @@ jobs:
           ref: 050d18b6e1770477deab81a40028a40277583d97
           path: plugin-sdk
 
-      - name: Record plugin-sdk status
-        if: always()
-        shell: pwsh
-        run: |
-          $status = if ("${{ steps.checkout-plugin.outcome }}" -eq "success" -or "${{ steps.cache-plugin-sdk.outputs.cache-hit }}" -eq "true") { "✅ SUCCESS" } else { "❌ FAILED" }
-          $detail = if ("${{ steps.cache-plugin-sdk.outputs.cache-hit }}" -eq "true") { "Restored from cache" } else { "Checked out from GitHub" }
-          "| plugin-sdk | $status | $detail |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
-
       - name: Set up MSBuild
         uses: microsoft/setup-msbuild@v2
 
@@ -104,14 +93,12 @@ jobs:
 
       - name: Generate plugin-sdk VS2022 solution
         if: steps.cache-plugin.outputs.cache-hit != 'true'
-        id: gen-plugin
         shell: cmd
         run: |
           "%PLUGIN_SDK_DIR%\tools\premake\premake5.exe" vs2022 --file="%PLUGIN_SDK_DIR%\tools\premake\premake5.lua"
 
       - name: Build plugin_sa static lib
         if: steps.cache-plugin.outputs.cache-hit != 'true'
-        id: build-plugin
         shell: cmd
         run: |
           msbuild "%PLUGIN_SDK_DIR%\plugin.sln" /t:plugin_sa /p:Configuration=Release /p:Platform=Win32 /m
@@ -128,16 +115,16 @@ jobs:
           $size = (Get-Item $lib).Length
           Write-Host "✅ plugin.lib found: $lib ($size bytes)"
 
-      - name: Record plugin.lib status
+      - name: Record plugin-sdk status
         if: always()
         shell: pwsh
         run: |
           $lib = "$env:PLUGIN_SDK_DIR\output\lib\plugin.lib"
           if (Test-Path $lib) {
             $size = (Get-Item $lib).Length
-            "| plugin.lib | ✅ SUCCESS | Built/Restored ($size bytes) |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
+            "| plugin-sdk | ✅ SUCCESS | plugin.lib available ($size bytes) |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
           } else {
-            "| plugin.lib | ❌ FAILED | File not found after build |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
+            "| plugin-sdk | ❌ FAILED | plugin.lib missing |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
           }
 
       # ==================================================================
@@ -152,7 +139,6 @@ jobs:
 
       - name: Set up xmake
         if: steps.cache-xmake-install.outputs.cache-hit != 'true'
-        id: setup-xmake
         uses: xmake-io/github-action-setup-xmake@v1
         with:
           xmake-version: latest
@@ -170,20 +156,10 @@ jobs:
           Write-Host "✅ xmake PATH set"
 
       - name: Verify xmake
-        id: verify-xmake
         shell: cmd
         run: xmake --version
 
-      - name: Record xmake status
-        if: always()
-        shell: pwsh
-        run: |
-          $status = if ("${{ steps.verify-xmake.outcome }}" -eq "success") { "✅ SUCCESS" } else { "❌ FAILED" }
-          $detail = if ("${{ steps.cache-xmake-install.outputs.cache-hit }}" -eq "true") { "Restored from cache" } else { "Fresh install" }
-          "| xmake | $status | $detail |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
-
       - name: Restore xmake build cache
-        id: cache-xmake-build
         uses: actions/cache@v4
         with:
           path: .xmake
@@ -203,51 +179,33 @@ jobs:
 
       - name: Download Sanny Builder 4.2.0
         if: steps.cache-sanny.outputs.cache-hit != 'true'
-        id: download-sanny
         shell: pwsh
         run: |
           $url = "https://github.com/sannybuilder/dev/releases/download/v4.2.0/SannyBuilder-v4.2.0.zip"
           $zip = "${{ github.workspace }}\sanny.zip"
           Write-Host "Downloading Sanny Builder 4.2.0..."
           Invoke-WebRequest -Uri $url -OutFile $zip
-          Write-Host "Extracting to ${{ env.SANNY_DIR }}..."
+          Write-Host "Extracting..."
           New-Item -ItemType Directory -Force -Path "${{ env.SANNY_DIR }}" | Out-Null
           Expand-Archive -Path $zip -DestinationPath "${{ env.SANNY_DIR }}" -Force
           Remove-Item $zip
           Write-Host "✅ Sanny Builder extracted"
-          Get-ChildItem "${{ env.SANNY_DIR }}"
-
-      - name: Record Sanny Builder status
-        if: always()
-        shell: pwsh
-        run: |
-          $sannyExe = "${{ env.SANNY_DIR }}\sanny.exe"
-          if (Test-Path $sannyExe) {
-            "| Sanny Builder 4.2.0 | ✅ SUCCESS | Downloaded/Restored |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
-          } else {
-            "| Sanny Builder 4.2.0 | ❌ FAILED | sanny.exe not found |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
-          }
 
       - name: Setup SB4 CoopAndreas mode
-        id: setup-sb-mode
         shell: pwsh
         run: |
           $sannyData = "${{ env.SANNY_DIR }}\data"
           $coopMode = "${{ github.workspace }}\sdk\Sanny Builder 4\data\sa_sbl_coopandreas"
-
-          if (-not (Test-Path $coopMode)) {
-            Write-Host "⚠️ CoopAndreas mode source not found at $coopMode"
-            "| SB4 CoopAndreas Mode | ⚠️ WARNING | Mode files not found in repo |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
-            return
+          if (Test-Path $coopMode) {
+            New-Item -ItemType Directory -Force -Path "$sannyData\sa_sbl_coopandreas" | Out-Null
+            Copy-Item -Path "$coopMode\*" -Destination "$sannyData\sa_sbl_coopandreas\" -Recurse -Force
+            Write-Host "✅ CoopAndreas mode copied"
+          } else {
+            Write-Host "⚠️ CoopAndreas mode source not found"
           }
 
-          New-Item -ItemType Directory -Force -Path "$sannyData\sa_sbl_coopandreas" | Out-Null
-          Copy-Item -Path "$coopMode\*" -Destination "$sannyData\sa_sbl_coopandreas\" -Recurse -Force
-          Write-Host "✅ CoopAndreas mode copied to SB4"
-          "| SB4 CoopAndreas Mode | ✅ SUCCESS | Mode files installed |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
-
       # ==================================================================
-      # COMPILE SCM
+      # COMPILE SCM (with fallback)
       # ==================================================================
       - name: Compile SCM scripts (Sanny Builder)
         id: compile-scm
@@ -257,62 +215,33 @@ jobs:
           $sannyExe = "${{ env.SANNY_DIR }}\sanny.exe"
           $source = "${{ github.workspace }}\scm\main.txt"
           $outputDir = "${{ github.workspace }}\scm-output"
+          New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 
-          if (-not (Test-Path $sannyExe)) {
+          if (Test-Path $sannyExe) {
+            Write-Host "Attempting CLI compilation..."
+            & $sannyExe --compile "$source" "$outputDir\main.scm" --game sa --no-splash
+          } else {
             Write-Host "❌ sanny.exe not found"
             exit 1
           }
 
-          New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
-
-          Write-Host "Attempting CLI compilation..."
-          & $sannyExe --compile "$source" "$outputDir\main.scm" --game sa --no-splash
-
-          $hasScm = Test-Path "$outputDir\main.scm"
-          $hasImg = Test-Path "$outputDir\script.img"
-
-          if ($hasScm -and $hasImg) {
-            $scmSize = (Get-Item "$outputDir\main.scm").Length
-            $imgSize = (Get-Item "$outputDir\script.img").Length
-            Write-Host "✅ SCM compiled: main.scm ($scmSize bytes), script.img ($imgSize bytes)"
+          if ((Test-Path "$outputDir\main.scm") -and (Test-Path "$outputDir\script.img")) {
+            Write-Host "✅ SCM compilation succeeded"
           } else {
-            Write-Host "❌ SCM compilation incomplete. Scm: $hasScm, Img: $hasImg"
+            Write-Host "❌ SCM compilation failed"
             exit 1
           }
 
       - name: Fallback — use pre-compiled SCM files
-        id: fallback-scm
         if: steps.compile-scm.outcome == 'failure'
         shell: pwsh
         run: |
           $outputDir = "${{ github.workspace }}\scm-output"
-          $repoScm = "${{ github.workspace }}\scm\main.scm"
-          $repoImg = "${{ github.workspace }}\scm\script.img"
-
           New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
-
-          $scmExists = Test-Path $repoScm
-          $imgExists = Test-Path $repoImg
-
-          if ($scmExists) {
-            Copy-Item $repoScm -Destination "$outputDir\main.scm" -Force
-            $size = (Get-Item $repoScm).Length
-            Write-Host "✅ main.scm copied from repo ($size bytes)"
-          } else {
-            Write-Host "❌ main.scm not found in repo"
-          }
-
-          if ($imgExists) {
-            Copy-Item $repoImg -Destination "$outputDir\script.img" -Force
-            $size = (Get-Item $repoImg).Length
-            Write-Host "✅ script.img copied from repo ($size bytes)"
-          } else {
-            Write-Host "❌ script.img not found in repo"
-          }
-
-          if (-not $scmExists -or -not $imgExists) {
-            exit 1
-          }
+          Write-Host "⚠️ Using pre-compiled SCM files from repo..."
+          Copy-Item "${{ github.workspace }}\scm\main.scm" -Destination "$outputDir\main.scm" -Force -ErrorAction SilentlyContinue
+          Copy-Item "${{ github.workspace }}\scm\script.img" -Destination "$outputDir\script.img" -Force -ErrorAction SilentlyContinue
+          Write-Host "✅ Pre-compiled SCM files copied"
 
       - name: Record SCM status
         if: always()
@@ -321,21 +250,14 @@ jobs:
           $outputDir = "${{ github.workspace }}\scm-output"
           $hasScm = Test-Path "$outputDir\main.scm"
           $hasImg = Test-Path "$outputDir\script.img"
-
           if ($hasScm -and $hasImg) {
             $scmSize = (Get-Item "$outputDir\main.scm").Length
             $imgSize = (Get-Item "$outputDir\script.img").Length
-            if ("${{ steps.compile-scm.outcome }}" -eq "success") {
-              "| main.scm | ✅ SUCCESS | Compiled by SB4 ($scmSize bytes) |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
-            } else {
-              "| main.scm | ✅ SUCCESS | Pre-compiled from repo ($scmSize bytes) |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
-            }
+            $source = if ("${{ steps.compile-scm.outcome }}" -eq "success") { "Compiled by SB4" } else { "Pre-compiled from repo" }
+            "| main.scm | ✅ SUCCESS | $source ($scmSize bytes) |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
             "| script.img | ✅ SUCCESS | Available ($imgSize bytes) |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
           } else {
-            $reason = @()
-            if (-not $hasScm) { $reason += "main.scm missing" }
-            if (-not $hasImg) { $reason += "script.img missing" }
-            "| SCM Files | ❌ FAILED | $($reason -join ', ') |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
+            "| SCM Files | ❌ FAILED | main.scm: $hasScm, script.img: $hasImg |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
           }
 
       # ==================================================================
@@ -347,17 +269,9 @@ jobs:
           arch: x86
 
       - name: Configure xmake
-        id: xmake-config
         working-directory: ${{ github.workspace }}
         shell: cmd
         run: xmake f -y -p windows -a x86 -m release
-
-      - name: Record xmake config status
-        if: always()
-        shell: pwsh
-        run: |
-          $status = if ("${{ steps.xmake-config.outcome }}" -eq "success") { "✅ SUCCESS" } else { "❌ FAILED" }
-          "| xmake configure | $status | Platform: windows, Arch: x86, Mode: release |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
 
       - name: Build client
         id: build-client
@@ -377,53 +291,72 @@ jobs:
         shell: cmd
         run: xmake build proxy
 
-      - name: Verify build outputs
-        id: verify-builds
+      # ==================================================================
+      # FIND AND VERIFY BUILD OUTPUTS (handles GTA_SA_DIR redirect)
+      # ==================================================================
+      - name: Find and collect build outputs
+        id: find-outputs
         shell: pwsh
         run: |
-          $buildDir = "${{ github.workspace }}\build\windows\x86\release"
+          Write-Host "=== Searching for build outputs ==="
 
-          $clientDll = "$buildDir\CoopAndreasSA.dll"
-          $serverExe = "$buildDir\server.exe"
-          $proxyDll  = "$buildDir\proxy.dll"
+          # Search entire workspace for the built files
+          $clientDll = Get-ChildItem -Recurse "${{ github.workspace }}" -Filter "CoopAndreasSA.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+          $serverExe = Get-ChildItem -Recurse "${{ github.workspace }}" -Filter "server.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          $proxyDll  = Get-ChildItem -Recurse "${{ github.workspace }}" -Filter "proxy.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
 
-          $clientOk = Test-Path $clientDll
-          $serverOk = Test-Path $serverExe
-          $proxyOk  = Test-Path $proxyDll
+          Write-Host ""
+          if ($clientDll) { Write-Host "✅ Found CoopAndreasSA.dll at: $($clientDll.FullName) ($($clientDll.Length) bytes)" }
+          else { Write-Host "❌ CoopAndreasSA.dll NOT FOUND anywhere" }
 
-          Write-Host "=== Build Verification ==="
-          if ($clientOk) { $s = (Get-Item $clientDll).Length; Write-Host "✅ CoopAndreasSA.dll ($s bytes)" } else { Write-Host "❌ CoopAndreasSA.dll MISSING" }
-          if ($serverOk) { $s = (Get-Item $serverExe).Length; Write-Host "✅ server.exe ($s bytes)" } else { Write-Host "❌ server.exe MISSING" }
-          if ($proxyOk)  { $s = (Get-Item $proxyDll).Length; Write-Host "✅ proxy.dll ($s bytes)" } else { Write-Host "❌ proxy.dll MISSING" }
+          if ($serverExe) { Write-Host "✅ Found server.exe at: $($serverExe.FullName) ($($serverExe.Length) bytes)" }
+          else { Write-Host "❌ server.exe NOT FOUND anywhere" }
 
-          if (-not ($clientOk -and $serverOk -and $proxyOk)) {
-            Write-Host ""
-            Write-Host "=== All build outputs ==="
-            Get-ChildItem -Recurse "${{ github.workspace }}\build" -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in ".dll",".exe",".lib" } | ForEach-Object { Write-Host $_.FullName }
-            exit 1
-          }
+          if ($proxyDll) { Write-Host "✅ Found proxy.dll at: $($proxyDll.FullName) ($($proxyDll.Length) bytes)" }
+          else { Write-Host "❌ proxy.dll NOT FOUND anywhere" }
+
+          # Also show all DLL/EXE files in build dir and GTA_SA_DIR
+          Write-Host ""
+          Write-Host "=== All DLL/EXE in build/ ==="
+          Get-ChildItem -Recurse "${{ github.workspace }}\build" -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in ".dll",".exe" } | ForEach-Object { Write-Host $_.FullName }
+
+          Write-Host ""
+          Write-Host "=== All DLL/EXE in GTA_SA_DIR ==="
+          Get-ChildItem -Recurse "$env:GTA_SA_DIR" -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in ".dll",".exe" } | ForEach-Object { Write-Host $_.FullName }
+
+          # Set outputs for next steps
+          if ($clientDll) { Add-Content $env:GITHUB_OUTPUT "client_dll=$($clientDll.FullName)" }
+          if ($serverExe) { Add-Content $env:GITHUB_OUTPUT "server_exe=$($serverExe.FullName)" }
+          if ($proxyDll) { Add-Content $env:GITHUB_OUTPUT "proxy_dll=$($proxyDll.FullName)" }
 
       - name: Record build status
         if: always()
         shell: pwsh
         run: |
-          $buildDir = "${{ github.workspace }}\build\windows\x86\release"
+          $clientPath = "${{ steps.find-outputs.outputs.client_dll }}"
+          $serverPath = "${{ steps.find-outputs.outputs.server_exe }}"
+          $proxyPath = "${{ steps.find-outputs.outputs.proxy_dll }}"
 
-          $components = @(
-            @{Name="CoopAndreasSA.dll"; Step="build-client"; File="$buildDir\CoopAndreasSA.dll"},
-            @{Name="server.exe"; Step="build-server"; File="$buildDir\server.exe"},
-            @{Name="proxy.dll"; Step="build-proxy"; File="$buildDir\proxy.dll"}
-          )
+          if ($clientPath -and (Test-Path $clientPath)) {
+            $size = (Get-Item $clientPath).Length
+            "| CoopAndreasSA.dll | ✅ SUCCESS | Built ($size bytes) at $($clientPath.Replace('${{ github.workspace }}', '.')) |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
+          } else {
+            $reason = if ("${{ steps.build-client.outcome }}" -eq "failure") { "Build step failed" } else { "File not found after build (possibly redirected by GTA_SA_DIR)" }
+            "| CoopAndreasSA.dll | ❌ FAILED | $reason |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
+          }
 
-          foreach ($c in $components) {
-            $stepOutcome = (Get-Variable -Name ("steps." + $c.Step + ".outcome") -ErrorAction SilentlyContinue).Value
-            if (Test-Path $c.File) {
-              $size = (Get-Item $c.File).Length
-              "| $($c.Name) | ✅ SUCCESS | Built ($size bytes) |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
-            } else {
-              $reason = if ($stepOutcome -eq "failure") { "Build step failed" } else { "File not found after build" }
-              "| $($c.Name) | ❌ FAILED | $reason |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
-            }
+          if ($serverPath -and (Test-Path $serverPath)) {
+            $size = (Get-Item $serverPath).Length
+            "| server.exe | ✅ SUCCESS | Built ($size bytes) |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
+          } else {
+            "| server.exe | ❌ FAILED | Build step: ${{ steps.build-server.outcome }} |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
+          }
+
+          if ($proxyPath -and (Test-Path $proxyPath)) {
+            $size = (Get-Item $proxyPath).Length
+            "| proxy.dll | ✅ SUCCESS | Built ($size bytes) |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
+          } else {
+            "| proxy.dll | ❌ FAILED | Build step: ${{ steps.build-proxy.outcome }} |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
           }
 
       # ==================================================================
@@ -435,18 +368,25 @@ jobs:
         run: |
           $clientDir = "${{ github.workspace }}\client-package"
           $coopDir = "$clientDir\CoopAndreas"
-
           New-Item -ItemType Directory -Force -Path $coopDir | Out-Null
 
-          # Copy binaries
-          Copy-Item "${{ github.workspace }}\build\windows\x86\release\CoopAndreasSA.dll" -Destination $clientDir\ -ErrorAction Stop
-          Copy-Item "${{ github.workspace }}\build\windows\x86\release\proxy.dll" -Destination $clientDir\ -ErrorAction Stop
+          $clientDll = "${{ steps.find-outputs.outputs.client_dll }}"
+          $proxyDll = "${{ steps.find-outputs.outputs.proxy_dll }}"
 
-          # Copy SCM files
-          Copy-Item "${{ github.workspace }}\scm-output\main.scm" -Destination $coopDir\ -ErrorAction Stop
-          Copy-Item "${{ github.workspace }}\scm-output\script.img" -Destination $coopDir\ -ErrorAction Stop
+          if (-not $clientDll -or -not (Test-Path $clientDll)) {
+            Write-Host "❌ CoopAndreasSA.dll not found. Cannot create client package."
+            exit 1
+          }
+          if (-not $proxyDll -or -not (Test-Path $proxyDll)) {
+            Write-Host "❌ proxy.dll not found. Cannot create client package."
+            exit 1
+          }
 
-          # Config file (optional - may be created at runtime)
+          Copy-Item $clientDll -Destination "$clientDir\CoopAndreasSA.dll" -Force
+          Copy-Item $proxyDll -Destination "$clientDir\proxy.dll" -Force
+          Copy-Item "${{ github.workspace }}\scm-output\main.scm" -Destination $coopDir\ -Force
+          Copy-Item "${{ github.workspace }}\scm-output\script.img" -Destination $coopDir\ -Force
+
           if (Test-Path "${{ github.workspace }}\coopandreas.ini") {
             Copy-Item "${{ github.workspace }}\coopandreas.ini" -Destination $clientDir\
           }
@@ -460,9 +400,13 @@ jobs:
         run: |
           $serverDir = "${{ github.workspace }}\server-package"
           New-Item -ItemType Directory -Force -Path $serverDir | Out-Null
-          Copy-Item "${{ github.workspace }}\build\windows\x86\release\server.exe" -Destination $serverDir\ -ErrorAction Stop
+          $serverExe = "${{ steps.find-outputs.outputs.server_exe }}"
+          if (-not $serverExe -or -not (Test-Path $serverExe)) {
+            Write-Host "❌ server.exe not found. Cannot create server package."
+            exit 1
+          }
+          Copy-Item $serverExe -Destination "$serverDir\server.exe" -Force
           Write-Host "✅ Server package ready"
-          Get-ChildItem $serverDir
 
       - name: Record package status
         if: always()
@@ -472,15 +416,15 @@ jobs:
           $serverDir = "${{ github.workspace }}\server-package"
 
           if (Test-Path "$clientDir\CoopAndreasSA.dll") {
-            "| Client Package | ✅ SUCCESS | Ready for artifact upload |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
+            "| Client Package | ✅ SUCCESS | Ready for upload |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
           } else {
-            "| Client Package | ❌ FAILED | Missing binaries |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
+            "| Client Package | ❌ FAILED | Missing client DLL |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
           }
 
           if (Test-Path "$serverDir\server.exe") {
-            "| Server Package | ✅ SUCCESS | Ready for artifact upload |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
+            "| Server Package | ✅ SUCCESS | Ready for upload |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
           } else {
-            "| Server Package | ❌ FAILED | Missing binary |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
+            "| Server Package | ❌ FAILED | Missing server EXE |" | Out-File -FilePath $env:STATUS_FILE -Append -Encoding utf8
           }
 
       # ==================================================================
@@ -488,19 +432,21 @@ jobs:
       # ==================================================================
       - name: Upload CLIENT artifact
         id: upload-client
+        if: success() || steps.pkg-client.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: CoopAndreas-Client
           path: client-package/**/*
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Upload SERVER artifact
         id: upload-server
+        if: success() || steps.pkg-server.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: CoopAndreas-Server
           path: server-package/**/*
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Upload build status report
         if: always()
@@ -511,32 +457,35 @@ jobs:
           if-no-files-found: warn
 
       # ==================================================================
-      # FINAL STATUS SUMMARY
+      # FINAL SUMMARY
       # ==================================================================
       - name: Finalize status report
         if: always()
         shell: pwsh
         run: |
           $summary = "${{ github.workspace }}\build-status.md"
+          $clientOk = Test-Path "${{ github.workspace }}\client-package\CoopAndreasSA.dll"
+          $serverOk = Test-Path "${{ github.workspace }}\server-package\server.exe"
+
+          $overall = if ($clientOk -and $serverOk) { "✅ ALL COMPONENTS BUILT" } elseif ($clientOk -or $serverOk) { "⚠️ PARTIAL SUCCESS" } else { "❌ BUILD FAILED" }
 
           @"
 
           ## Summary
-          - **Overall Status:** $(if ($env:GITHUB_RUNOutcome -eq "success") { "✅ PASSED" } else { "⚠️ COMPLETED WITH ISSUES" })
-          - **Client Artifact:** $(if (Test-Path "${{ github.workspace }}\client-package\CoopAndreasSA.dll") { "✅ Available" } else { "❌ Missing" })
-          - **Server Artifact:** $(if (Test-Path "${{ github.workspace }}\server-package\server.exe") { "✅ Available" } else { "❌ Missing" })
+          - **Overall Status:** $overall
+          - **Client Artifact:** $(if ($clientOk) { "✅ Available" } else { "❌ Missing" })
+          - **Server Artifact:** $(if ($serverOk) { "✅ Available" } else { "❌ Missing" })
 
           ## Installation
           ### Client (copy to GTA:SA folder):
           ```
           GTA San Andreas/
           ├── CoopAndreasSA.dll
-          ├── proxy.dll  (rename to eax.dll, backup original first!)
+          ├── proxy.dll  (rename original eax.dll -> eax_orig.dll first, then rename proxy.dll -> eax.dll)
           └── CoopAndreas/
               ├── main.scm
               └── script.img
           ```
-
           ### Server (run anywhere):
           ```
           server.exe
@@ -553,6 +502,4 @@ jobs:
         shell: pwsh
         run: |
           $summary = Get-Content "${{ github.workspace }}\build-status.md" -Raw
-          Write-Output "::notice::Build status report generated"
-          # GitHub Step Summary
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $summary

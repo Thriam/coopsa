@@ -9,7 +9,9 @@ jobs:
 
     env:
       PLUGIN_SDK_DIR: ${{ github.workspace }}\plugin-sdk
-      GTA_SA_DIR: ${{ github.workspace }}\gta_sa_dummy  # dummy dir for CI; prevents xmake copy step from failing
+      GTA_SA_DIR: ${{ github.workspace }}\gta_sa_dummy
+      XMAKE_ROOTDIR: ${{ github.workspace }}\.xmake-install
+      SANNY_DIR: ${{ github.workspace }}\sanny-builder
 
     steps:
       - name: Checkout CoopAndreas (main branch)
@@ -27,7 +29,18 @@ jobs:
           if (Test-Path xmake.lua) { Write-Host "✅ xmake.lua found" }
           else { Write-Host "❌ xmake.lua NOT found"; exit 1 }
 
+      # ------------------------------------------------------------------
+      # Cache 1: plugin-sdk source (pinned commit)
+      # ------------------------------------------------------------------
+      - name: Restore plugin-sdk source
+        id: cache-plugin-sdk
+        uses: actions/cache@v4
+        with:
+          path: plugin-sdk
+          key: plugin-sdk-src-050d18b6e1770477deab81a40028a40277583d97
+
       - name: Checkout plugin-sdk (pinned commit)
+        if: steps.cache-plugin-sdk.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
           repository: DK22Pac/plugin-sdk
@@ -37,12 +50,24 @@ jobs:
       - name: Set up MSBuild
         uses: microsoft/setup-msbuild@v2
 
+      # ------------------------------------------------------------------
+      # Cache 2: plugin.lib build artifact
+      # ------------------------------------------------------------------
+      - name: Restore plugin.lib from cache
+        id: cache-plugin
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}\plugin-sdk\output\lib\plugin.lib
+          key: plugin-sdk-lib-050d18b6e1770477deab81a40028a40277583d97
+
       - name: Generate plugin-sdk VS2022 solution (premake5)
+        if: steps.cache-plugin.outputs.cache-hit != 'true'
         shell: cmd
         run: |
           "%PLUGIN_SDK_DIR%\tools\premake\premake5.exe" vs2022 --file="%PLUGIN_SDK_DIR%\tools\premake\premake5.lua"
 
       - name: Build plugin_sa static lib (plugin.lib)
+        if: steps.cache-plugin.outputs.cache-hit != 'true'
         shell: cmd
         run: |
           msbuild "%PLUGIN_SDK_DIR%\plugin.sln" /t:plugin_sa /p:Configuration=Release /p:Platform=Win32 /m
@@ -54,11 +79,110 @@ jobs:
           if (-not (Test-Path $lib)) { throw "plugin.lib was not produced at $lib" }
           Write-Host "Found $lib"
 
+      # ------------------------------------------------------------------
+      # Cache 3: xmake installer
+      # ------------------------------------------------------------------
+      - name: Restore xmake installer
+        id: cache-xmake-install
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.XMAKE_ROOTDIR }}
+          key: xmake-install-3.0.9-win64
+
       - name: Set up xmake
+        if: steps.cache-xmake-install.outputs.cache-hit != 'true'
         uses: xmake-io/github-action-setup-xmake@v1
         with:
           xmake-version: latest
 
+      - name: Add cached xmake to PATH
+        if: steps.cache-xmake-install.outputs.cache-hit == 'true'
+        shell: pwsh
+        run: |
+          $xmakeBin = "$env:XMAKE_ROOTDIR\x64"
+          if (-not (Test-Path "$xmakeBin\xmake.exe")) {
+            Write-Host "❌ Cached xmake.exe not found at $xmakeBin"
+            exit 1
+          }
+          Add-Content $env:GITHUB_PATH "$xmakeBin"
+          Write-Host "✅ Added cached xmake to PATH: $xmakeBin"
+
+      - name: Verify xmake version
+        shell: cmd
+        run: xmake --version
+
+      # ------------------------------------------------------------------
+      # Cache 4: xmake build cache
+      # ------------------------------------------------------------------
+      - name: Restore xmake build cache
+        uses: actions/cache@v4
+        with:
+          path: .xmake
+          key: xmake-build-${{ runner.os }}-${{ hashFiles('xmake.lua') }}
+          restore-keys: |
+            xmake-build-${{ runner.os }}-
+
+      # ------------------------------------------------------------------
+      # NEW: Download and setup Sanny Builder 4.2.0
+      # ------------------------------------------------------------------
+      - name: Restore Sanny Builder 4.2.0
+        id: cache-sanny
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.SANNY_DIR }}
+          key: sanny-builder-4.2.0
+
+      - name: Download Sanny Builder 4.2.0
+        if: steps.cache-sanny.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/sannybuilder/dev/releases/download/v4.2.0/SannyBuilder-v4.2.0.zip"
+          $zip = "${{ github.workspace }}\sanny.zip"
+          Write-Host "Downloading Sanny Builder 4.2.0..."
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Write-Host "Extracting..."
+          Expand-Archive -Path $zip -DestinationPath "${{ env.SANNY_DIR }}" -Force
+          Remove-Item $zip
+          Write-Host "✅ Sanny Builder extracted to ${{ env.SANNY_DIR }}"
+
+      - name: Setup Sanny Builder CoopAndreas mode
+        shell: pwsh
+        run: |
+          $sannyData = "${{ env.SANNY_DIR }}\data"
+          $coopMode = "${{ github.workspace }}\sdk\Sanny Builder 4\data\sa_sbl_coopandreas"
+          
+          # Create the mode directory
+          New-Item -ItemType Directory -Force -Path "$sannyData\sa_sbl_coopandreas" | Out-Null
+          
+          # Copy all CoopAndreas mode files
+          Copy-Item -Path "$coopMode\*" -Destination "$sannyData\sa_sbl_coopandreas\" -Recurse -Force
+          
+          # Copy mode.xml to the data root (SB 4.2+ uses subfolder modes)
+          # Also need to ensure the mode is discoverable
+          Write-Host "✅ CoopAndreas mode files copied"
+
+      - name: Compile SCM scripts with Sanny Builder
+        shell: cmd
+        run: |
+          set SANNY_EXE=${{ env.SANNY_DIR }}\sanny.exe
+          set SOURCE=${{ github.workspace }}\scm\main.txt
+          set OUTPUT_DIR=${{ github.workspace }}\scm-output
+          
+          mkdir "%OUTPUT_DIR%"
+          
+          "%SANNY_EXE%" --compile "%SOURCE%" "%OUTPUT_DIR%\main.scm" --game sa --no-splash
+          
+          if not exist "%OUTPUT_DIR%\main.scm" (
+            echo ❌ main.scm compilation failed
+            exit 1
+          )
+          
+          echo ✅ main.scm compiled successfully
+          dir "%OUTPUT_DIR%"
+
+      # ------------------------------------------------------------------
+      # Build C++ projects
+      # ------------------------------------------------------------------
       - name: Set up MSVC x86 dev environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -89,11 +213,64 @@ jobs:
         run: |
           Get-ChildItem -Recurse build | Where-Object { $_.Extension -in ".dll", ".exe" } | ForEach-Object { $_.FullName }
 
-      - name: Upload build artifacts
+      # ------------------------------------------------------------------
+      # Prepare client artifact (files to copy to GTA:SA folder)
+      # ------------------------------------------------------------------
+      - name: Prepare client package
+        shell: pwsh
+        run: |
+          $clientDir = "${{ github.workspace }}\client-package"
+          $coopDir = "$clientDir\CoopAndreas"
+          
+          New-Item -ItemType Directory -Force -Path $coopDir | Out-Null
+          
+          # Copy client DLL
+          Copy-Item "${{ github.workspace }}\build\windows\x86\release\CoopAndreasSA.dll" -Destination $clientDir\
+          
+          # Copy proxy DLL
+          Copy-Item "${{ github.workspace }}\build\windows\x86\release\proxy.dll" -Destination $clientDir\
+          
+          # Copy compiled SCM files to CoopAndreas subfolder
+          Copy-Item "${{ github.workspace }}\scm-output\main.scm" -Destination $coopDir\
+          Copy-Item "${{ github.workspace }}\scm\script.img" -Destination $coopDir\
+          
+          # Also copy config if exists
+          if (Test-Path "${{ github.workspace }}\coopandreas.ini") {
+            Copy-Item "${{ github.workspace }}\coopandreas.ini" -Destination $clientDir\
+          }
+          
+          Write-Host "✅ Client package prepared"
+          Get-ChildItem -Recurse $clientDir
+
+      # ------------------------------------------------------------------
+      # Prepare server artifact
+      # ------------------------------------------------------------------
+      - name: Prepare server package
+        shell: pwsh
+        run: |
+          $serverDir = "${{ github.workspace }}\server-package"
+          New-Item -ItemType Directory -Force -Path $serverDir | Out-Null
+          
+          Copy-Item "${{ github.workspace }}\build\windows\x86\release\server.exe" -Destination $serverDir\
+          
+          Write-Host "✅ Server package prepared"
+          Get-ChildItem $serverDir
+
+      # ------------------------------------------------------------------
+      # Upload artifacts
+      # ------------------------------------------------------------------
+      - name: Upload CLIENT artifact (copy to GTA:SA folder)
         uses: actions/upload-artifact@v4
         with:
-          name: CoopAndreasSA-build
+          name: CoopAndreas-Client
           path: |
-            build/windows/x86/release/*.dll
-            build/windows/x86/release/*.exe
-          if-no-files-found: warn
+            client-package/*
+          if-no-files-found: error
+
+      - name: Upload SERVER artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CoopAndreas-Server
+          path: |
+            server-package/*
+          if-no-files-found: error
